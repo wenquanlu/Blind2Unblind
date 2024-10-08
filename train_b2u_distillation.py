@@ -30,7 +30,7 @@ parser.add_argument('--data_dir', type=str,
                     default='./data/train/Imagenet_val')
 parser.add_argument('--val_dirs', type=str, default='./data/validation')
 parser.add_argument('--save_model_path', type=str,
-                    default='../experiments/results')
+                    default='../experiments/results_distillation')
 parser.add_argument('--log_name', type=str,
                     default='b2u_unet_gauss25_112rf20')
 parser.add_argument('--gpu_devices', default='0', type=str)
@@ -47,6 +47,7 @@ parser.add_argument('--patchsize', type=int, default=128)
 parser.add_argument("--Lambda1", type=float, default=1.0)
 parser.add_argument("--Lambda2", type=float, default=2.0)
 parser.add_argument("--increase_ratio", type=float, default=20.0)
+parser.add_argument("--ema", type=float, default=0.0)
 
 opt, _ = parser.parse_known_args()
 systime = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
@@ -492,6 +493,11 @@ def calculate_psnr(target, ref, data_range=255.0):
     psnr = 10.0 * np.log10(data_range**2 / np.mean(np.square(diff)))
     return psnr
 
+def update_teacher_ema(model_student, model_teacher, tau=0.10):
+    # Perform EMA update on the teacher's parameters
+    with torch.no_grad():  # No gradients for teacher updates
+        for param_student, param_teacher in zip(model_student.parameters(), model_teacher.parameters()):
+            param_teacher.data = tau * param_teacher.data + (1.0 - tau) * param_student.data
 
 # Training Set
 TrainingDataset = DataLoader_Imagenet_val(opt.data_dir, patch=opt.patchsize)
@@ -525,9 +531,17 @@ masker = Masker(width=4, mode='interpolate', mask_type='all')
 network = UNet(in_channels=opt.n_channel,
                 out_channels=opt.n_channel,
                 wf=opt.n_feature)
+
+teacher_network = UNet(in_channels=opt.n_channel,
+                out_channels=opt.n_channel,
+                wf=opt.n_feature)
+
+teacher_network.load_state_dict(network.state_dict())
+
 if opt.parallel:
     network = torch.nn.DataParallel(network)
 network = network.cuda()
+teacher_network.cuda()
 
 # about training scheme
 num_epoch = opt.n_epoch
@@ -597,7 +611,7 @@ for epoch in range(epoch_init, opt.n_epoch + 1):
         diff = noisy_output - noisy
 
         with torch.no_grad():
-            exp_output = network(noisy)
+            exp_output = teacher_network(noisy)
         exp_diff = exp_output - noisy
 
         # g25, p30: 1_1-2; frange-10
@@ -619,6 +633,7 @@ for epoch in range(epoch_init, opt.n_epoch + 1):
 
         loss_all.backward()
         optimizer.step()
+        update_teacher_ema(network, teacher_network, opt.ema)
         logger.info(
             '{:04d} {:05d} diff={:.6f}, exp_diff={:.6f}, Loss_Reg={:.6f}, Lambda={}, Loss_Rev={:.6f}, Loss_All={:.6f}, Time={:.4f}'
             .format(epoch, iteration, torch.mean(diff**2).item(), torch.mean(exp_diff**2).item(),

@@ -30,7 +30,7 @@ def load_and_save(img_path):
     img.save(save_path, quality=100, subsampling=0)
 
 
-input_dir = "/YourPath/ILSVRC2012_img_val"
+input_dir = "../ILSVRC2012_img_val"
 save_dir = "./data/train/Imagenet_val"
 
 images = []
